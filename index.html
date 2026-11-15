@@ -59,10 +59,9 @@
   #preview { display: block; max-width: 100%; max-height: 180px; margin: 12px auto 0; border-radius: 10px; }
   #live { margin-bottom: 10px; }
   #live-video { display: block; width: 100%; max-height: 55vh; object-fit: cover; background: #000; border-radius: 12px; margin-bottom: 8px; }
-  #live-scan, #https-link { margin-bottom: 10px; }
+  #live-scan { margin-bottom: 10px; }
   a.button { text-decoration: none; }
   label.button input { display: none; }
-  #google-scan + label.button { margin-top: 10px; }
   .button.secondary, label.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); min-height: 44px; font-size: 15px; }
 </style>
 </head>
@@ -87,8 +86,6 @@
         <video id="live-video" playsinline muted></video>
         <button id="live-stop" type="button" class="secondary">Cerrar la cámara</button>
       </div>
-      <a id="https-link" class="button hidden" href="#"><span aria-hidden="true">📷</span> Escanear con la cámara (nuevo)</a>
-      <button id="google-scan" type="button" class="hidden"><span aria-hidden="true">🔍</span> Escanear con Google</button>
       <label id="photo-button" class="button" for="photo">
         <span aria-hidden="true">📷</span> Foto del código de barras
         <input id="photo" type="file" accept="image/*" capture="environment">

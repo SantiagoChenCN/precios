@@ -1,15 +1,11 @@
-// P-030 staff page. Asks the till for one product at a time; keeps nothing.
+// P-030 staff page. Asks the till for one product at a time.
 //
-// The camera is reached through a plain file input rather than getUserMedia:
-// on http://<till-address> a browser refuses live camera access (it needs a
-// secure context), but it will still hand over a photo taken with the phone's
-// own camera app. The barcode is then read from that photo, here, by zxing.
-//
-// P-032 (D-085): the same page is also published over HTTPS (GitHub Pages),
-// where the camera is allowed live. There it talks to the till across origins:
+// P-032 (D-085): served over HTTPS (GitHub Pages), where a browser allows the
+// camera live, and nowhere else. It talks to the till across origins:
 // http://<till> from "?till=", which Chrome allows on the shop's network once
 // the staff member grants "local network access". It cannot send the till a
-// cookie, so it keeps the session value and sends it as X-Staff-Session.
+// cookie, so it keeps the session value and sends it as X-Staff-Session. A
+// photo of the barcode, read here by ZXing, remains the fallback.
 "use strict";
 
 (function () {
@@ -22,8 +18,6 @@
 
   // --- Where the till is (P-032) ------------------------------------------------
 
-  var REMOTE = location.protocol === "https:";
-  var HTTPS_PAGE = "https://santiagochencn.github.io/precios/";
   // Only an address on the shop's own network, so a forged link cannot send
   // the staff code anywhere else.
   var OCTET = "(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
@@ -40,8 +34,8 @@
     try { return localStorage.getItem(key); } catch (e) { return null; }
   }
 
-  var base = "";
-  if (REMOTE) {
+  var base = null;
+  (function () {
     var asked = new URLSearchParams(location.search).get("till");
     var known = recalled("till");
     if (asked !== null) {
@@ -62,11 +56,9 @@
       tillName.textContent = "Caja: " + till;
       tillName.classList.remove("hidden");
     }
-  }
+  })();
 
-  var OFFLINE = REMOTE
-    ? "No se puede conectar con la caja. Verifique que está en el WiFi del local y que Chrome tiene permiso de «red local» (toque el candado junto a la dirección)."
-    : "No se puede conectar con la caja. Verifique que está en el WiFi del local.";
+  var OFFLINE = "No se puede conectar con la caja. Verifique que está en el WiFi del local y que Chrome tiene permiso de «red local» (toque el candado junto a la dirección).";
 
 
   function show(view) {
@@ -83,17 +75,15 @@
 
   function request(method, url, body) {
     if (base === null) { return Promise.reject(new Error("no till address")); }
-    var options = { method: method, credentials: REMOTE ? "omit" : "same-origin", cache: "no-store", headers: {} };
-    if (REMOTE) {
-      var session = recalled("session");
-      if (session) { options.headers["X-Staff-Session"] = session; }
-    }
+    var options = { method: method, credentials: "omit", cache: "no-store", headers: {} };
+    var session = recalled("session");
+    if (session) { options.headers["X-Staff-Session"] = session; }
     if (body !== undefined) {
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
     }
     return fetch(base + url, options).then(function (response) {
-      if (REMOTE && response.status === 401) { remember("session", null); }
+      if (response.status === 401) { remember("session", null); }
       return response.json().catch(function () { return {}; }).then(function (data) {
         return { status: response.status, data: data };
       });
@@ -108,11 +98,10 @@
     setStatus(status, "Verificando…");
     request("POST", "/api/login", { code: $("login-code").value.trim() }).then(function (r) {
       if (r.status === 200) {
-        if (REMOTE && r.data.token) { remember("session", String(r.data.token)); }
+        if (r.data.token) { remember("session", String(r.data.token)); }
         $("login-code").value = "";
         setStatus(status, "");
         show("lookup");
-        handleReturnedScan();
       } else if (r.status === 429) {
         setStatus(status, "Demasiados intentos. Espere un minuto y vuelva a probar.", true);
       } else {
@@ -522,49 +511,10 @@
     });
   });
 
-  // --- Google scanner (Android) ------------------------------------------------
+  // --- Live camera (P-032) ------------------------------------------------------
   //
-  // The Owner's app scans with Google's code scanner, which a web page cannot
-  // call. On Android the page hands over to a small app, «Escáner de precios»
-  // (android/staffscan, D-079): it runs that scanner and opens this page again
-  // with "#code=<code>" (or "#scan=cancel|error|invalid"), in the same browser,
-  // where the code is looked up. Without the app installed, the browser follows
-  // the fallback to /escaner, which explains how to install it.
-
-  var SCANNER_PACKAGE = "com.supermarket.staffscan";
-  var googleScan = $("google-scan");
-
-  function scannerLink() {
-    var page = location.protocol + "//" + location.host + "/";
-    return "intent://scan?ret=" + encodeURIComponent(page) +
-      "#Intent;scheme=supermercado-scan;package=" + SCANNER_PACKAGE +
-      ";S.browser_fallback_url=" + encodeURIComponent(page + "escaner") + ";end";
-  }
-
-  // The scanner app only returns to the plain-HTTP page, so the HTTPS page,
-  // which scans live itself, does not offer it.
-  if (!REMOTE && /Android/i.test(navigator.userAgent)) {
-    googleScan.classList.remove("hidden");
-    $("photo-button").classList.add("secondary");
-    googleScan.addEventListener("click", function () {
-      setStatus(statusEl, "Abriendo el escáner de Google…");
-      location.href = scannerLink();
-    });
-    // P-032: the way to the HTTPS copy, which scans live (Chrome on Android).
-    // Only when this page was reached by an address that copy accepts.
-    var here = location.hostname + ":" + (location.port || "80");
-    if (TILL_PATTERN.test(here)) {
-      var httpsLink = $("https-link");
-      httpsLink.href = HTTPS_PAGE + "?till=" + encodeURIComponent(here);
-      httpsLink.classList.remove("hidden");
-      googleScan.classList.add("secondary");
-    }
-  }
-
-  // --- Live camera (HTTPS page only, P-032) ------------------------------------
-  //
-  // A browser allows getUserMedia only in a secure context, which the HTTPS
-  // copy is. Chrome's own BarcodeDetector reads the video when it knows EAN-13;
+  // A browser allows getUserMedia only in a secure context, which this HTTPS
+  // page is. Chrome's own BarcodeDetector reads the video when it knows EAN-13;
   // otherwise the ZXing-C++ detector above does. Every start bumps liveRun, so
   // a camera that opens after the staff member closed it is stopped at once.
 
@@ -639,7 +589,7 @@
       });
   }
 
-  if (REMOTE && window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  if (window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
     liveButton.classList.remove("hidden");
     $("photo-button").classList.add("secondary");
     liveButton.addEventListener("click", startLive);
@@ -648,45 +598,18 @@
     document.addEventListener("visibilitychange", function () { if (document.hidden) { stopLive(); } });
   }
 
-  // What the scanner sent back, read once and then removed from the address,
-  // so a reload does not look the same code up again.
-  function takeReturnedScan() {
-    var match = /^#(code|scan)=([0-9A-Za-z]{1,32})$/.exec(location.hash);
-    if (location.hash) { history.replaceState(null, "", location.pathname); }
-    if (!match) { return null; }
-    return { kind: match[1], value: match[2] };
-  }
-
-  var returned = takeReturnedScan();
-
-  function handleReturnedScan() {
-    var scan = returned;
-    returned = null;
-    if (!scan) { return; }
-    if (scan.kind === "code") {
-      if (preview.dataset.url) { URL.revokeObjectURL(preview.dataset.url); delete preview.dataset.url; }
-      preview.classList.add("hidden");
-      lookup(scan.value);
-    } else if (scan.value === "error") {
-      setStatus(statusEl, "No se pudo usar el escáner de Google. Saque una foto del código.", true);
-    } else if (scan.value === "invalid") {
-      setStatus(statusEl, "El código leído no es válido. Pruebe otra vez o escríbalo.", true);
-    }
-  }
-
   // --- Start -------------------------------------------------------------------
 
   if (base === null) {
     show("login");
     $("login-form").classList.add("hidden");
     setStatus($("login-status"),
-      "Esta página no sabe dónde está la caja. Ábrala con el botón «Escanear con la cámara (nuevo)» de la página de precios de la caja.", true);
+      "Esta página no sabe dónde está la caja. Ábrala con el código QR que tiene el dueño.", true);
     return;
   }
 
   request("GET", "/api/session").then(function (r) {
     show(r.status === 200 ? "lookup" : "login");
-    if (r.status === 200) { handleReturnedScan(); }
   }).catch(function () {
     show("login");
     setStatus($("login-status"), OFFLINE, true);
