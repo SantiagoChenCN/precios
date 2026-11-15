@@ -29,8 +29,7 @@
   var OCTET = "(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
   var TILL_PATTERN = new RegExp("^(10\\." + OCTET + "\\." + OCTET + "\\." + OCTET +
     "|192\\.168\\." + OCTET + "\\." + OCTET +
-    "|172\\.(1[6-9]|2\\d|3[01])\\." + OCTET + "\\." + OCTET +
-    "|localhost|127\\.0\\.0\\.1):\\d{1,5}$");
+    "|172\\.(1[6-9]|2\\d|3[01])\\." + OCTET + "\\." + OCTET + "):\\d{1,5}$");
 
   function remember(key, value) {
     try {
@@ -44,12 +43,25 @@
   var base = "";
   if (REMOTE) {
     var asked = new URLSearchParams(location.search).get("till");
+    var known = recalled("till");
     if (asked !== null) {
-      if (TILL_PATTERN.test(asked)) { remember("till", asked); }
+      // Another machine on the same WiFi could pose as the till, so a link
+      // never replaces the remembered till without the staff member saying so.
+      if (TILL_PATTERN.test(asked) && (!known || asked === known ||
+          window.confirm("Este enlace usa la caja " + asked + " en lugar de " + known +
+            ". ¿Cambiar de caja? Si no está seguro, toque Cancelar y pregunte al dueño."))) {
+        if (asked !== known) { remember("session", null); }
+        remember("till", asked);
+      }
       history.replaceState(null, "", location.pathname);
     }
     var till = recalled("till");
     base = till && TILL_PATTERN.test(till) ? "http://" + till : null;
+    if (base) {
+      var tillName = $("till-name");
+      tillName.textContent = "Caja: " + till;
+      tillName.classList.remove("hidden");
+    }
   }
 
   var OFFLINE = REMOTE
@@ -539,10 +551,14 @@
       location.href = scannerLink();
     });
     // P-032: the way to the HTTPS copy, which scans live (Chrome on Android).
-    var httpsLink = $("https-link");
-    httpsLink.href = HTTPS_PAGE + "?till=" + encodeURIComponent(location.host);
-    httpsLink.classList.remove("hidden");
-    googleScan.classList.add("secondary");
+    // Only when this page was reached by an address that copy accepts.
+    var here = location.hostname + ":" + (location.port || "80");
+    if (TILL_PATTERN.test(here)) {
+      var httpsLink = $("https-link");
+      httpsLink.href = HTTPS_PAGE + "?till=" + encodeURIComponent(here);
+      httpsLink.classList.remove("hidden");
+      googleScan.classList.add("secondary");
+    }
   }
 
   // --- Live camera (HTTPS page only, P-032) ------------------------------------
