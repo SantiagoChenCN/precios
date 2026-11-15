@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTPS 扫码测试</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 16px; max-width: 640px; margin: auto; }
+  h1 { font-size: 1.3em; }
+  h2 { font-size: 1.1em; margin-top: 28px; }
+  button { font: inherit; padding: 12px 16px; margin: 4px 4px 4px 0; border-radius: 10px; border: 1px solid #888; }
+  input { font: inherit; padding: 8px; width: 12em; }
+  video { width: 100%; max-height: 50vh; background: #111; border-radius: 10px; }
+  .log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px; background: rgba(128,128,128,.15); padding: 10px; border-radius: 8px; }
+  .ok { color: #1a8f3a; font-weight: bold; }
+  .bad { color: #c62828; font-weight: bold; }
+  .code { font-size: 1.6em; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>HTTPS 扫码测试（P-031 试验）</h1>
+<p>这个页面只用来测试两件事：HTTPS 网页里能不能实时扫码；能不能从这个网页连到店里的收银电脑。它不读也不改任何数据。</p>
+<div class="log" id="env"></div>
+
+<h2>1. 实时扫码</h2>
+<button id="cam">打开相机</button><button id="stop">关闭相机</button>
+<video id="video" playsinline muted hidden></video>
+<p id="camStatus"></p>
+<p class="code" id="code"></p>
+
+<h2>2. 连接收银电脑</h2>
+<p>收银电脑地址：<input id="host" value="192.168.1.204:8023"></p>
+<button id="probe">测试连接</button>
+<p>第一次测试时 Chrome 应该会弹出「查找并连接本地网络上的设备」，请点<b>允许</b>。</p>
+<div class="log" id="netLog"></div>
+
+<script src="barcode-detector.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var env = $("env");
+  var chrome = (navigator.userAgent.match(/Chrome\/([\d.]+)/) || [])[1] || "不是 Chrome";
+  env.textContent = "网页地址: " + location.origin + "\n安全环境(isSecureContext): " + window.isSecureContext
+    + "\n浏览器: Chrome " + chrome + "\n原生 BarcodeDetector: " + ("BarcodeDetector" in window);
+
+  // --- 1. live scanning -------------------------------------------------------
+  var FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "codabar"];
+  var stream = null, timer = null, detector = null, which = "";
+  function getDetector() {
+    if (detector) return Promise.resolve(detector);
+    var native = window.BarcodeDetector && BarcodeDetector.getSupportedFormats
+      ? BarcodeDetector.getSupportedFormats() : Promise.resolve([]);
+    return native.then(function (formats) {
+      var usable = FORMATS.filter(function (f) { return formats.indexOf(f) >= 0; });
+      if (usable.indexOf("ean_13") >= 0) {
+        which = "系统自带识别";
+        detector = new BarcodeDetector({ formats: usable });
+      } else {
+        which = "ZXing-C++ (WebAssembly)";
+        var api = window.BarcodeDetectionAPI;
+        api.prepareZXingModule({ overrides: { locateFile: function (p, prefix) {
+          return /\.wasm$/.test(p) ? "zxing_reader.wasm" : prefix + p; } } });
+        detector = new api.BarcodeDetector({ formats: FORMATS });
+      }
+      return detector;
+    });
+  }
+  function stop() {
+    clearTimeout(timer); timer = null;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null; $("video").srcObject = null; $("video").hidden = true;
+  }
+  $("stop").onclick = function () { stop(); $("camStatus").textContent = "相机已关闭。"; };
+  $("cam").onclick = function () {
+    stop();
+    $("code").textContent = "";
+    $("camStatus").textContent = "正在打开相机…";
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $("camStatus").innerHTML = '<span class="bad">这个浏览器在这里不给实时相机（getUserMedia 不存在）。</span>';
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false })
+      .then(function (s) {
+        stream = s;
+        var v = $("video"); v.hidden = false; v.srcObject = s;
+        return v.play();
+      })
+      .then(getDetector)
+      .then(function (d) {
+        $("camStatus").innerHTML = '<span class="ok">相机已打开</span>（识别方式：' + which + '）。把条码对准镜头。';
+        var started = Date.now();
+        (function scan() {
+          if (!stream) return;
+          var v = $("video");
+          (v.videoWidth ? d.detect(v) : Promise.resolve([])).then(function (codes) {
+            if (codes.length) {
+              $("code").textContent = codes[0].rawValue + "（" + codes[0].format + "，"
+                + ((Date.now() - started) / 1000).toFixed(1) + " 秒）";
+              stop();
+              $("camStatus").innerHTML = '<span class="ok">识别成功。</span>';
+              if (navigator.vibrate) navigator.vibrate(80);
+              return;
+            }
+            timer = setTimeout(scan, 150);
+          }, function () { timer = setTimeout(scan, 300); });
+        })();
+      })
+      .catch(function (e) {
+        stop();
+        $("camStatus").innerHTML = '<span class="bad">打不开相机：' + (e && e.name || e) + '</span>';
+      });
+  };
+
+  // --- 2. reaching the till ---------------------------------------------------
+  function line(text, cls) {
+    var p = document.createElement("div");
+    if (cls) p.className = cls;
+    p.textContent = text;
+    $("netLog").appendChild(p);
+  }
+  function permission() {
+    if (!navigator.permissions) return Promise.resolve("无法查询");
+    return navigator.permissions.query({ name: "local-network" })
+      .catch(function () { return navigator.permissions.query({ name: "local-network-access" }); })
+      .then(function (s) { return s.state; }, function () { return "这个 Chrome 不认识这个权限"; });
+  }
+  $("probe").onclick = function () {
+    var base = "http://" + $("host").value.trim();
+    $("netLog").textContent = "";
+    permission().then(function (state) {
+      line("本地网络权限（测试前）: " + state);
+      line("① 只看能不能连上（no-cors）: " + base + "/");
+      var t0 = Date.now();
+      return fetch(base + "/", { mode: "no-cors", cache: "no-store" }).then(function () {
+        line("   能连上收银电脑（" + (Date.now() - t0) + " ms）", "ok");
+        return true;
+      }, function (e) {
+        line("   连不上: " + e, "bad");
+        return false;
+      });
+    }).then(function (reached) {
+      line("② 能不能读到回答（cors）: " + base + "/api/session");
+      return fetch(base + "/api/session", { cache: "no-store" }).then(function (r) {
+        line("   读到了: HTTP " + r.status, "ok");
+      }, function (e) {
+        line("   读不到: " + e + (reached
+          ? "\n   （①能连上、②读不到：这是预期的，收银电脑还没加跨域设置，下一步要改的就是它）" : ""), reached ? "" : "bad");
+      });
+    }).then(permission).then(function (state) {
+      line("本地网络权限（测试后）: " + state);
+    });
+  };
+})();
+</script>
+</body>
+</html>
